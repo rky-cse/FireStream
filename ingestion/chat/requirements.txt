@@ -1,0 +1,8 @@
+transformers
+torch
+keybert
+nltk
+redis
+huggingface_hub
+sentence-transformers
+httpx
