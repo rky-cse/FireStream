@@ -1,0 +1,33 @@
+services:
+  redis:
+    image: redis:7-alpine
+    container_name: redis-voice
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  voice-ingestion:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: voice-ingestion
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./.env
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - .:/app                          # Mount entire project for live reload
+      - ../../opensmile/bin/SMILExtract:/usr/local/bin/SMILExtract:ro
+      - ../../opensmile/config/prosodyShs.conf:/app/opensmile/config/prosodyShs.conf:ro
+    command: ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+
+networks:
+  default:
+    name: voice-net

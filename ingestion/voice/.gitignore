@@ -1,0 +1,6 @@
+.venv310
+opensmile
+__pycache__
+*.pyc
+*.pyo
+*.pyd  

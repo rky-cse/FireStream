@@ -1,0 +1,10 @@
+fastapi
+uvicorn[standard]
+numpy
+pydantic
+pydantic-settings
+ffmpeg-python
+aioredis
+websockets
+python-multipart
+# openai-whisper is now installed from GitHub in Dockerfile
