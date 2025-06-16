@@ -1,0 +1,175 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Audio Prosody & Transcription Demo</title>
+  <style>
+    body {
+      font-family: sans-serif;
+      max-width: 600px;
+      margin: 2rem auto;
+      padding: 1rem;
+    }
+    h1 { text-align: center; }
+    section { margin-bottom: 2rem; }
+    button, input[type="file"] {
+      display: block;
+      margin-top: 0.5rem;
+    }
+    #log {
+      background: #f4f4f4;
+      padding: 1rem;
+      height: 200px;
+      overflow-y: auto;
+      font-family: monospace;
+      white-space: pre-wrap;
+    }
+  </style>
+</head>
+<body>
+  <h1>Prosody & Whisper Demo</h1>
+
+  <!-- FILE UPLOAD SECTION -->
+  <section>
+    <h2>1. Upload Audio File</h2>
+    <input type="file" id="fileInput" accept="audio/*"/>
+    <button id="uploadBtn">Upload & Transcribe</button>
+  </section>
+
+  <!-- MICROPHONE STREAM SECTION -->
+  <section>
+    <h2>2. Stream from Microphone</h2>
+    <button id="startBtn">Start Streaming</button>
+    <button id="stopBtn" disabled>Stop Streaming</button>
+  </section>
+
+  <!-- LOG OUTPUT -->
+  <section>
+    <h2>Log</h2>
+    <div id="log"></div>
+  </section>
+
+  <script>
+    const LOG = document.getElementById('log');
+    function log(msg) {
+      LOG.textContent += msg + '\n';
+      LOG.scrollTop = LOG.scrollHeight;
+    }
+
+    // ----- Part 1: File upload -----
+    document.getElementById('uploadBtn').onclick = async () => {
+      const fileInput = document.getElementById('fileInput');
+      if (!fileInput.files.length) { alert('Please choose a file'); return; }
+      const file = fileInput.files[0];
+      const form = new FormData();
+      form.append('file', file);
+
+      log('[HTTP] Uploading file...');
+      try {
+        const resp = await fetch('http://localhost:8000/transcribe-file', {
+          method: 'POST', body: form
+        });
+        if (!resp.ok) throw new Error(resp.status + ' ' + resp.statusText);
+        const { transcript } = await resp.json();
+        log('[HTTP] Transcript: ' + transcript);
+      } catch (e) {
+        log('[HTTP] Error: ' + e);
+      }
+    };
+
+    // ----- Part 2: Microphone streaming -----
+    let ws, audioCtx, processor, micStream;
+    document.getElementById('startBtn').onclick = async () => {
+      document.getElementById('startBtn').disabled = true;
+      document.getElementById('stopBtn').disabled = false;
+
+      // open WebSocket
+      ws = new WebSocket('ws://localhost:8000/stream-prosody');
+      ws.binaryType = 'arraybuffer';
+      ws.onopen = () => {
+        log('[WS] Connected');
+        startAudioCapture();   // only start audio once ws is ready
+      };
+      ws.onerror = e => log('[WS] Error: ' + e.message || e);
+      ws.onclose = event => {
+        log(`[WS] Closed (code=${event.code}, reason=${event.reason || '—'})`);
+      };
+
+      function startAudioCapture() {
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        navigator.mediaDevices.getUserMedia({ audio: true })
+          .then(stream => {
+            micStream = audioCtx.createMediaStreamSource(stream);
+            const bufferSize = 4096;
+            processor = audioCtx.createScriptProcessor(bufferSize, 1, 1);
+
+            const sampleRate = audioCtx.sampleRate;
+            const targetRate = 16000;
+            let pcmBuffer = [];
+
+            // simple linear resampler
+            function resample(buffer, fromRate, toRate) {
+              const ratio = fromRate / toRate;
+              const outLen = Math.round(buffer.length / ratio);
+              const out = new Float32Array(outLen);
+              for (let i = 0; i < outLen; i++) {
+                const idx = i * ratio;
+                const lo = Math.floor(idx), hi = Math.min(buffer.length - 1, Math.ceil(idx));
+                out[i] = buffer[lo] + (buffer[hi] - buffer[lo]) * (idx - lo);
+              }
+              return out;
+            }
+
+            processor.onaudioprocess = e => {
+              const input = e.inputBuffer.getChannelData(0);
+              const down = resample(input, sampleRate, targetRate);
+              const int16 = new Int16Array(down.length);
+              for (let i = 0; i < down.length; i++) {
+                let s = Math.max(-1, Math.min(1, down[i]));
+                int16[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+              }
+              pcmBuffer.push(int16);
+
+              // once ≥1s of audio, send
+              const needed = targetRate * 1;
+              let total = pcmBuffer.reduce((sum, c) => sum + c.length, 0);
+              if (total >= needed) {
+                const out = new Int16Array(needed);
+                let offset = 0;
+                while (offset < needed) {
+                  const chunk = pcmBuffer.shift();
+                  const take = Math.min(chunk.length, needed - offset);
+                  out.set(chunk.subarray(0, take), offset);
+                  offset += take;
+                  if (chunk.length > take) {
+                    pcmBuffer.unshift(chunk.subarray(take));
+                  }
+                }
+                ws.send(out.buffer);
+                log(`[WS] Sent 1s chunk (${out.length} samples)`);
+              }
+            };
+
+            micStream.connect(processor);
+            processor.connect(audioCtx.destination);
+          })
+          .catch(err => {
+            log('[Audio] getUserMedia error: ' + err);
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('stopBtn').disabled = true;
+          });
+      }
+    };
+
+    document.getElementById('stopBtn').onclick = () => {
+      if (processor) processor.disconnect();
+      if (micStream) micStream.disconnect();
+      if (audioCtx) audioCtx.close();
+      if (ws) ws.close();
+      document.getElementById('startBtn').disabled = false;
+      document.getElementById('stopBtn').disabled = true;
+      log('[WS] Streaming stopped by client');
+    };
+  </script>
+</body>
+</html>
