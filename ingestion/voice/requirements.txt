@@ -18,3 +18,4 @@ numpy
 pydantic
 torchaudio
 librosa
+chardet
