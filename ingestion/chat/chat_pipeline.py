@@ -31,7 +31,7 @@ def generate_summary(messages: list[str], timeout: float = 30.0) -> str:
     prompt = (
         "Here are the most recent chat messages:\n" +
         f"{joined}\n\n" +
-        "Based on these messages, summarize the overall sentiment or feeling in one concise sentence."
+        "Based on just these messages only and no previous context, summarize the overall sentiment or feeling."
     )
 
     payload = {
