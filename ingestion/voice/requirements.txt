@@ -1,10 +1,21 @@
+# fastapi
+# uvicorn[standard]
+# numpy
+# pydantic
+# pydantic-settings
+# ffmpeg-python
+# aioredis
+# websockets
+# python-multipart
+# # openai-whisper is now installed from GitHub in Dockerfile
+
 fastapi
 uvicorn[standard]
+websockets
+python-dotenv
+redis[hiredis]
 numpy
 pydantic
-pydantic-settings
-ffmpeg-python
-aioredis
-websockets
-python-multipart
-# openai-whisper is now installed from GitHub in Dockerfile
+torchaudio
+librosa
+chardet
