@@ -50,6 +50,7 @@ import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import HomePage from './components/HomePage';
 import VideoPlayer from './components/VideoPlayer';
 import VoiceProsodyComponent from './components/VoiceProsodyComponent';
+import VoiceSearchComponent from './components/VoiceSearchComponent';
 
 const App = () => {
   return (
@@ -58,6 +59,7 @@ const App = () => {
         <Route path="/" element={<HomePage />} />
         <Route path="/videoPlayer" element={<VideoPlayer />} />
         <Route path="/search" element={<VoiceProsodyComponent />} />
+        <Route path="/voice-search" element={<VoiceSearchComponent/>} />
       </Routes>
     </Router>
   );
