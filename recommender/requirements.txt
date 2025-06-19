@@ -1,0 +1,13 @@
+ numpy==1.24.3
+ pandas==2.0.3
+ scipy==1.10.1
+ scikit-learn==1.3.0
+# # machine learning libraries
+#  lightfm==1.17
+
+# # web/API framework
+# fastapi==0.95.0
+# uvicorn==0.22.0
+
+# # date utilities (if you ever need more than stdlib)
+# python-dateutil==2.9.1
