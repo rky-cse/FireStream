@@ -41,7 +41,7 @@ RUN mkdir -p /tmp/voice_chunks \
 ################################################################################
 # 4. Base Python environment
 ################################################################################
-RUN pip install --no-cache-dir git+https://github.com/openai/whisper.git
+RUN pip install git+https://github.com/openai/whisper.git
 
 # Copy only requirements first to leverage caching
 COPY requirements.txt ./
