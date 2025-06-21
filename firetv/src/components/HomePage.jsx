@@ -9,6 +9,8 @@ const HomePage = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState('');
   const [prosodyInfluenced, setProsodyInfluenced] = useState(false);
+  const [videos, setVideos] = useState([]); // Changed from mock data to state
+  const [isSearching, setIsSearching] = useState(false);
   
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -18,16 +20,12 @@ const HomePage = () => {
   const audioBufferRef = useRef([]); 
   const clientId = useRef(`home_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
 
-  // Mock video data (unchanged)
-  const videos = [ /* ... your 8 videos ... */ ];
   const categories = ['All', 'Prime Video', 'Netflix', 'Disney+', 'HBO Max', 'Hulu'];
 
   // Filter based on searchQuery and selectedCategory
   const filteredVideos = videos.filter(video => {
-    const matchesText = video.title.toLowerCase().includes(searchQuery.toLowerCase())
-      || video.keywords.some(k => k.includes(searchQuery.toLowerCase()));
     const matchesCat = selectedCategory === 'All' || video.category === selectedCategory;
-    return matchesText && matchesCat;
+    return matchesCat; // Now we only filter by category since search is handled by backend
   });
 
   // Connect websocket on mount
@@ -37,7 +35,7 @@ const HomePage = () => {
       setIsConnected(true);
       setVoiceStatus('Voice service online');
     };
-    ws.onmessage = ev => handleVoiceMessage(JSON.parse(ev.data));
+    ws.onmessage = ev => handleWebSocketMessage(JSON.parse(ev.data));
     ws.onclose = () => {
       setIsConnected(false);
       setVoiceStatus('Voice service offline');
@@ -53,7 +51,7 @@ const HomePage = () => {
     };
   }, []);
 
-  const handleVoiceMessage = (msg) => {
+  const handleWebSocketMessage = (msg) => {
     switch (msg.type) {
       case 'transcription':
         setIsProcessing(false);
@@ -71,9 +69,15 @@ const HomePage = () => {
         setProsodyInfluenced(msg.analysis.prosody_summary.feature_extraction_success);
         setVoiceStatus('✨ Voice characteristics applied');
         break;
+      case 'search_results':
+        setIsSearching(false);
+        setVideos(msg.results);
+        setVoiceStatus(`🔍 Found ${msg.results.length} results`);
+        break;
       case 'error':
         setIsProcessing(false);
         setIsRecording(false);
+        setIsSearching(false);
         setVoiceStatus(`❌ ${msg.message}`);
         break;
       default:
@@ -151,8 +155,23 @@ const HomePage = () => {
 
   const handleSearchSubmit = (e) => {
     e.preventDefault();
+    if (!searchQuery.trim()) return;
+    
     setProsodyInfluenced(false);
-    // simply filter via searchQuery
+    setIsSearching(true);
+    setVoiceStatus('🔍 Searching...');
+    
+    // Send search request via WebSocket
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'search',
+        query: searchQuery,
+        client_id: clientId.current
+      }));
+    } else {
+      setVoiceStatus('❌ Connection not ready');
+      setIsSearching(false);
+    }
   };
 
   const cleanup = () => {
@@ -187,17 +206,17 @@ const HomePage = () => {
               placeholder="Search movies, TV shows..."
               value={searchQuery}
               onChange={e => setSearchQuery(e.target.value)}
-              disabled={isRecording || isProcessing}
+              disabled={isRecording || isProcessing || isSearching}
             />
             <button
               type="button"
               onClick={handleMicClick}
-              disabled={!isConnected}
+              disabled={!isConnected || isSearching}
               className={`p-3 mr-2 rounded-lg transition-all ${
                 isRecording
                   ? 'bg-red-600 animate-pulse'
                   : 'bg-orange-600 hover:bg-orange-700'
-              }`}
+              } ${isSearching ? 'opacity-50' : ''}`}
             >
               {isProcessing
                 ? <Loader2 className="w-5 h-5 animate-spin"/>
@@ -207,6 +226,7 @@ const HomePage = () => {
           {voiceStatus && (
             <p className="mt-2 text-sm text-center">
               {voiceStatus}
+              {isSearching && <Loader2 className="w-4 h-4 ml-2 inline animate-spin"/>}
             </p>
           )}
         </form>
@@ -267,7 +287,9 @@ const HomePage = () => {
           ))
           : (
             <div className="col-span-full text-center py-12 text-gray-400">
-              No results found. Try a different search or voice command.
+              {isSearching 
+                ? 'Searching...'
+                : 'No results found. Try a different search or voice command.'}
             </div>
           )
         }

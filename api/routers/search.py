@@ -2,25 +2,20 @@ import logging
 import json
 from datetime import datetime
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from typing import Dict, Optional
+import os
+import sys
 
-# Assume there's a function called do_search in this file:
-# from recommender.searchRecommendor.engine import do_search
-# Example signature:
-# def do_search(user_id: str, query_text: str, prosody_data: dict) -> dict:
-#     # Implementation in engine.py
-#     return {"hits": [...], "metadata": {...}}
+# Add the project root to path (two levels up from api/routers)
+sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 try:
-    from recommender.searchRecommendor.engine import do_search
-except ImportError:
-    # Fallback if engine is not actually present; just a placeholder
-    def do_search(user_id: str, query_text: str, prosody_data: dict) -> dict:
-        return {
-            "hits": [{"title": "Sample Result", "score": 0.9}],
-            "info": "Placeholder do_search result"
-        }
+    from recommender.searchRecommender.engine import RecommendationEngine, SearchResult
+    logger = logging.getLogger("search_router")
+except ImportError as e:
+    logger.error(f"Import error: {e}")
+    raise
 
-logger = logging.getLogger("search_router")
 logger.setLevel(logging.INFO)
 if not logger.handlers:
     ch = logging.StreamHandler()
@@ -29,18 +24,29 @@ if not logger.handlers:
 
 router = APIRouter()
 
-# Same pattern as in voice.py but for search tasks
-connections = {}
+# WebSocket connections tracking
+connections: Dict[str, Dict] = {}
+
+# Initialize engine instance
+_engine = None
+
+def get_engine() -> RecommendationEngine:
+    global _engine
+    if _engine is None:
+        db_config = {
+            "host": os.getenv("DB_HOST", "localhost"),
+            "port": int(os.getenv("DB_PORT", 5432)),
+            "database": os.getenv("DB_NAME", "firestream_db"),
+            "user": os.getenv("DB_USER", "postgres"),
+            "password": os.getenv("DB_PASSWORD", "postgres")
+        }
+        es_host = os.getenv("ES_HOST", "http://localhost:9200")
+        _engine = RecommendationEngine(db_config, es_host)
+        logger.info("RecommendationEngine initialized successfully")
+    return _engine
 
 @router.websocket("/ws/{client_id}/search")
 async def websocket_search_endpoint(websocket: WebSocket, client_id: str):
-    """
-    WebSocket endpoint for handling search requests. It is meant to run in
-    parallel with the voice WebSocket, allowing the user to confirm or edit 
-    transcribed text and then hit 'enter' to initiate a search request. 
-    If prosody data is available, it's included; otherwise a default or empty 
-    prosody dict is used.
-    """
     await websocket.accept()
     connections[client_id] = {
         "websocket": websocket,
@@ -51,46 +57,62 @@ async def websocket_search_endpoint(websocket: WebSocket, client_id: str):
     try:
         while True:
             raw_data = await websocket.receive_text()
-            msg = json.loads(raw_data)
+            try:
+                msg = json.loads(raw_data)
+                
+                if msg.get("type") == "search_request":
+                    user_id = 'USR10001'
+                    query_text = msg.get("search_content", "")
+                    prosody_data = msg.get("prosody", {})
 
-            # Check for search request
-            if msg.get("type") == "search_request":
-                user_id = msg.get("userId")
-                query_text = msg.get("search_content", "")
-                prosody_data = msg.get("prosody") or {}
+                    logger.info(f"Processing search request from {client_id} for user {user_id}")
 
-                logger.info(
-                    f"Received search_request from {client_id} "
-                    f"(user_id: {user_id} / text: {query_text[:30]}...)"
-                )
+                    engine = get_engine()
+                    results = engine.get_recommendations(
+                        user_id=user_id,
+                        search_text=query_text,
+                        prosody=prosody_data
+                    )
 
-                # If no prosody provided, use default or empty structure
-                if not prosody_data:
-                    prosody_data = {"pitch_mean": 0.0, "energy_mean": 0.0}
+                    response = {
+                        "type": "search_result",
+                        "timestamp": datetime.now().isoformat(),
+                        "results": {
+                            "hits": [{
+                                "content_id": r.content_id,
+                                "title": r.title,
+                                "score": float(r.score),
+                                "match_reasons": r.match_reasons,
+                                "metadata": r.metadata
+                            } for r in results],
+                            "count": len(results)
+                        }
+                    }
+                    await websocket.send_text(json.dumps(response, default=str))
 
-                # Call the actual search engine function
-                try:
-                    results = do_search(user_id, query_text, prosody_data)
-                except Exception as engine_err:
-                    logger.error(f"Search engine error: {engine_err}")
-                    results = {"error": str(engine_err)}
+                else:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": "Invalid message type"
+                    }))
 
-                # Send back the result
-                response = {
-                    "type": "search_result",
-                    "timestamp": datetime.now().isoformat(),
-                    "results": results
-                }
-                await websocket.send_text(json.dumps(response))
-
-            # Could handle other message types here if needed
-            else:
-                logger.warning(f"Unknown message type from {client_id}: {msg}")
+            except json.JSONDecodeError:
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": "Invalid JSON format"
+                }))
+            except Exception as e:
+                logger.error(f"Error processing message: {str(e)}")
+                await websocket.send_text(json.dumps({
+                    "type": "error",
+                    "message": f"Processing error: {str(e)}"
+                }))
 
     except WebSocketDisconnect:
-        logger.info(f"Client {client_id} disconnected from search endpoint")
-    except Exception as e:
-        logger.error(f"Error on WebSocket ({client_id}): {e}")
+        logger.info(f"Client {client_id} disconnected")
     finally:
         connections.pop(client_id, None)
-        logger.info(f"Cleaned up data for client {client_id} from search endpoint")
+
+@router.get("/health")
+async def health_check():
+    return {"status": "healthy"}
