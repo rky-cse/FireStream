@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Search, Mic, Play, Star, Clock, Loader2 } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
 
 const HomePage = () => {
   const [searchQuery, setSearchQuery] = useState('');
@@ -11,6 +12,8 @@ const HomePage = () => {
   const [prosodyInfluenced, setProsodyInfluenced] = useState(false);
   const [videos, setVideos] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
+  const [userId, setUserId] = useState(localStorage.getItem('user_id') || '');
+  const [showUserIdForm, setShowUserIdForm] = useState(!userId);
   
   const wsRef = useRef(null);
   const audioContextRef = useRef(null);
@@ -18,19 +21,23 @@ const HomePage = () => {
   const processorRef = useRef(null);
   const streamRef = useRef(null);
   const audioBufferRef = useRef([]); 
-  const clientId = useRef(`home_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`);
+  const navigate = useNavigate();
 
   const categories = ['All', 'Prime Video', 'Netflix', 'Disney+', 'HBO Max', 'Hulu'];
 
-  // Filter based on searchQuery and selectedCategory
   const filteredVideos = videos.filter(video => {
-    const matchesCat = selectedCategory === 'All' || video.category === selectedCategory;
+    const matchesCat = selectedCategory === 'All' || 
+                      (video.metadata?.service && selectedCategory.includes(video.metadata.service));
     return matchesCat;
   });
 
-  // Connect websocket on mount
   useEffect(() => {
-    const ws = new WebSocket(`ws://localhost:8000/ws/${clientId.current}`);
+    if (!userId) {
+      setShowUserIdForm(true);
+      return;
+    }
+
+    const ws = new WebSocket(`ws://localhost:8000/ws/${userId}`);
     
     ws.onopen = () => {
       setIsConnected(true);
@@ -62,7 +69,19 @@ const HomePage = () => {
     return () => {
       cleanup();
     };
-  }, []);
+  }, [userId]);
+
+  const handleUserIdSubmit = (e) => {
+    e.preventDefault();
+    const formData = new FormData(e.target);
+    const newUserId = formData.get('user_id').trim();
+    
+    if (newUserId) {
+      localStorage.setItem('user_id', newUserId);
+      setUserId(newUserId);
+      setShowUserIdForm(false);
+    }
+  };
 
   const handleWebSocketMessage = (msg) => {
     switch (msg.type) {
@@ -87,7 +106,6 @@ const HomePage = () => {
         setVoiceStatus(`🔍 Found ${msg.results.length} results`);
         break;
       case 'search_response':
-        // Handle the search response from the new endpoint
         setIsSearching(false);
         if (msg.success) {
           setVideos(msg.results);
@@ -180,13 +198,12 @@ const HomePage = () => {
     setIsSearching(true);
     setVoiceStatus('🔍 Searching...');
     
-    // Send search request via WebSocket to the new endpoint
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'search',
         query: searchQuery,
-        client_id: clientId.current,
-        endpoint: 'search' // Specify we want to use the search endpoint
+        user_id: userId,
+        endpoint: 'search'
       }));
     } else {
       setVoiceStatus('❌ Connection not ready');
@@ -202,9 +219,35 @@ const HomePage = () => {
     if (wsRef.current) wsRef.current.close();
   };
 
+  if (showUserIdForm) {
+    return (
+      <div className="min-h-screen bg-gradient-to-b from-gray-900 via-black to-gray-900 text-white flex items-center justify-center">
+        <div className="bg-gray-800 p-8 rounded-lg max-w-md w-full">
+          <h2 className="text-2xl font-bold mb-6 text-center text-orange-500">Welcome to Fire TV</h2>
+          <p className="mb-4 text-gray-300">Please enter your User ID to continue:</p>
+          <form onSubmit={handleUserIdSubmit}>
+            <input
+              type="text"
+              name="user_id"
+              className="w-full px-4 py-3 bg-gray-700 rounded-lg mb-4 text-white focus:outline-none focus:ring-2 focus:ring-orange-500"
+              placeholder="Enter your User ID"
+              required
+              autoFocus
+            />
+            <button
+              type="submit"
+              className="w-full bg-orange-600 hover:bg-orange-700 text-white py-3 px-4 rounded-lg transition"
+            >
+              Continue
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="min-h-screen bg-gradient-to-b from-gray-900 via-black to-gray-900 text-white">
-      {/* HEADER */}
       <header className="flex justify-between items-center p-6 bg-black bg-opacity-50">
         <h1 className="text-2xl font-bold text-orange-500">fire tv</h1>
         <div className="flex items-center space-x-4">
@@ -215,7 +258,6 @@ const HomePage = () => {
         </div>
       </header>
 
-      {/* SEARCH BAR */}
       <div className="px-6 py-8">
         <form onSubmit={handleSearchSubmit} className="max-w-2xl mx-auto">
           <div className="relative flex items-center bg-gray-800 rounded-lg border border-gray-700 focus-within:border-orange-500">
@@ -252,7 +294,6 @@ const HomePage = () => {
         </form>
       </div>
 
-      {/* CATEGORIES */}
       <div className="px-6 mb-6">
         <div className="flex space-x-4 overflow-x-auto pb-2">
           {categories.map(cat => (
@@ -271,19 +312,26 @@ const HomePage = () => {
         </div>
       </div>
 
-      {/* VIDEO GRID */}
       <div className="px-6 pb-12 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
         {filteredVideos.length
           ? filteredVideos.map(video => (
-            <div key={video.id} className="group cursor-pointer transform hover:scale-105 transition">
+            <div 
+              key={video.content_id} 
+              className="group cursor-pointer transform hover:scale-105 transition"
+              onClick={() => navigate(`/video/${video.content_id}`)}
+            >
               <div className="relative overflow-hidden rounded-lg bg-gray-800">
-                <img src={video.thumbnail} alt={video.title}
-                     className="w-full h-48 object-cover group-hover:scale-110 transition"/>
+                <img 
+                  src={video.metadata?.thumbnail || '/default-thumbnail.jpg'} 
+                  alt={video.title}
+                  className="w-full h-48 object-cover group-hover:scale-110 transition"
+                />
                 <div className="absolute inset-0 bg-black bg-opacity-40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition">
                   <Play className="w-8 h-8 text-white"/>
                 </div>
                 <div className="absolute top-2 right-2 bg-black bg-opacity-70 px-2 py-1 rounded text-xs flex items-center">
-                  <Clock className="w-3 h-3 mr-1"/> {video.duration}
+                  <Clock className="w-3 h-3 mr-1"/> 
+                  {video.metadata?.duration || 'N/A'}
                 </div>
                 {prosodyInfluenced && (
                   <div className="absolute top-2 left-2 bg-orange-600 px-2 py-1 rounded text-xs">
@@ -296,12 +344,12 @@ const HomePage = () => {
                   {video.title}
                 </h3>
                 <div className="flex justify-between items-center mt-1 text-sm text-gray-400">
-                  <span>{video.category}</span>
+                  <span>{video.metadata?.service || 'Movie'}</span>
                   <span className="flex items-center">
-                    <Star className="w-4 h-4 text-yellow-500 mr-1"/> {video.rating}
+                    <Star className="w-4 h-4 text-yellow-500 mr-1"/> 
+                    {video.metadata?.rating?.toFixed(1) || 'N/A'}
                   </span>
                 </div>
-                <span className="text-xs text-gray-500">{video.year}</span>
               </div>
             </div>
           ))
