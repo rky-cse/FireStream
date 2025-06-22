@@ -1,223 +1,267 @@
-// src/components/VideoPlayer.jsx
 import React, { useState, useEffect, useRef } from 'react';
-import { Play, Pause, Volume2, VolumeX, Maximize, Settings } from 'lucide-react';
-import { mockStreamData } from '../utils/mockData';
+import { Send, MessageCircle, Users, X } from 'lucide-react';
+import { useParams } from 'react-router-dom';
 
-const VideoPlayer = ({ showChat, onToggleChat }) => {
-  const [isPlaying, setIsPlaying] = useState(false);
-  const [isMuted, setIsMuted] = useState(false);
-  const [volume, setVolume] = useState(100);
-  const [showControls, setShowControls] = useState(true);
-  const [currentTime, setCurrentTime] = useState(0);
-  const [isFullscreen, setIsFullscreen] = useState(false);
+const VideoPlayer = () => {
+  // Get userId from localStorage (string or null)
+  const userId = localStorage.getItem('user_id');
+  // Destructure contentId from URL params
+  const { contentId } = useParams();
+
+  const [videoMetadata, setVideoMetadata] = useState(null);
+  const [messages, setMessages] = useState([]);
+  const [newMessage, setNewMessage] = useState('');
+  const [onlineUsers, setOnlineUsers] = useState([]);
+  const [isConnected, setIsConnected] = useState(false);
+  const [isChatOpen, setIsChatOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState(null);
+
+  const wsRef = useRef(null);
+  const messagesEndRef = useRef(null);
   const videoRef = useRef(null);
-  const controlsTimeoutRef = useRef(null);
 
-  const { title, description, duration } = mockStreamData;
-
+  // Scroll to bottom on new messages
   useEffect(() => {
-    const timer = setInterval(() => {
-      if (isPlaying) {
-        setCurrentTime(prev => Math.min(prev + 1, duration));
-      }
-    }, 1000);
+    messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [messages]);
 
-    return () => clearInterval(timer);
-  }, [isPlaying, duration]);
-
-  // Auto-hide controls
+  // Fetch video metadata
   useEffect(() => {
-    if (controlsTimeoutRef.current) {
-      clearTimeout(controlsTimeoutRef.current);
-    }
-    
-    if (showControls) {
-      controlsTimeoutRef.current = setTimeout(() => {
-        if (isPlaying) {
-          setShowControls(false);
-        }
-      }, 3000);
-    }
+    if (!contentId) return;
 
-    return () => {
-      if (controlsTimeoutRef.current) {
-        clearTimeout(controlsTimeoutRef.current);
+    const fetchMetadata = async () => {
+      try {
+        const res = await fetch(`http://localhost:8000/api/video/metadata/${contentId}`);
+        if (!res.ok) throw new Error('Failed to fetch metadata');
+        const data = await res.json();
+        setVideoMetadata(data);
+      } catch (err) {
+        console.error(err);
+        setError('Failed to load video metadata');
+      } finally {
+        setLoading(false);
       }
     };
-  }, [showControls, isPlaying]);
 
-  const formatTime = (seconds) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-    if (hrs > 0) {
-      return `${hrs}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-    return `${mins}:${secs.toString().padStart(2, '0')}`;
+    fetchMetadata();
+  }, [contentId]);
+
+  // WebSocket chat connection
+  useEffect(() => {
+    if (!userId || !contentId) return;
+
+    let retryTimer;
+
+    const connect = () => {
+      const ws = new WebSocket(`ws://localhost:8000/ws/chat/${contentId}/${userId}`);
+      wsRef.current = ws;
+
+      ws.onopen = () => setIsConnected(true);
+      ws.onclose = () => {
+        setIsConnected(false);
+        retryTimer = setTimeout(connect, 3000);
+      };
+      ws.onerror = (e) => {
+        console.error('WebSocket error:', e);
+        ws.close();
+      };
+      ws.onmessage = ({ data }) => {
+        const msg = JSON.parse(data);
+        if (msg.type === 'message') {
+          setMessages((m) => [
+            ...m,
+            {
+              id: msg.id ?? Date.now(),
+              type: 'user',
+              userId: msg.user_id,
+              username: msg.username,
+              message: msg.message,
+              timestamp: msg.timestamp,
+            },
+          ]);
+        } else if (msg.type === 'user_joined' || msg.type === 'user_left') {
+          setMessages((m) => [
+            ...m,
+            {
+              id: Date.now(),
+              type: 'system',
+              message: `${msg.username} ${msg.type === 'user_joined' ? 'joined' : 'left'} the chat`,
+              timestamp: new Date().toISOString(),
+            },
+          ]);
+        } else if (msg.type === 'online_users') {
+          setOnlineUsers(msg.users || []);
+        }
+      };
+    };
+
+    connect();
+    return () => {
+      clearTimeout(retryTimer);
+      wsRef.current?.close();
+    };
+  }, [userId, contentId]);
+
+  const sendMessage = (e) => {
+    e.preventDefault();
+    const text = newMessage.trim();
+    if (!text || wsRef.current?.readyState !== WebSocket.OPEN) return;
+
+    wsRef.current.send(
+      JSON.stringify({
+        type: 'message',
+        message: text,
+        user_id: userId,
+        content_id: contentId,
+      })
+    );
+    setNewMessage('');
   };
 
-  const handlePlayPause = () => {
-    setIsPlaying(!isPlaying);
-  };
+  const formatTime = (iso) =>
+    new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
-  const handleProgressClick = (e) => {
-    const rect = e.currentTarget.getBoundingClientRect();
-    const clickX = e.clientX - rect.left;
-    const width = rect.width;
-    const newTime = Math.floor((clickX / width) * duration);
-    setCurrentTime(newTime);
-  };
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <span className="text-white text-xl">Loading video...</span>
+      </div>
+    );
+  }
 
-  const handleVolumeChange = (e) => {
-    const newVolume = parseInt(e.target.value);
-    setVolume(newVolume);
-    setIsMuted(newVolume === 0);
-  };
-
-  const handleMuteToggle = () => {
-    setIsMuted(!isMuted);
-  };
-
-  const handleFullscreen = () => {
-    setIsFullscreen(!isFullscreen);
-  };
-
-  const handleMouseMove = () => {
-    setShowControls(true);
-  };
+  if (error) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <span className="text-red-500 text-xl">{error}</span>
+      </div>
+    );
+  }
 
   return (
-    <div 
-      className="flex-1 relative bg-black"
-      onMouseMove={handleMouseMove}
-    >
-      {/* Video Background */}
-      <div className="w-full h-full bg-gradient-to-br from-gray-900 to-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="w-32 h-32 bg-gray-800 rounded-full flex items-center justify-center mb-4 mx-auto">
-            {isPlaying ? (
-              <div className="w-16 h-16 bg-red-600 rounded-full flex items-center justify-center">
-                <div className="w-2 h-2 bg-white rounded-full animate-pulse"></div>
-              </div>
-            ) : (
-              <Play className="w-16 h-16 text-white" />
-            )}
-          </div>
-          <h2 className="text-2xl font-bold text-white mb-2">{title}</h2>
-          <p className="text-gray-400">{description}</p>
-          {isPlaying && (
-            <div className="mt-4 text-red-500 font-semibold animate-pulse">
-              🔴 LIVE
-            </div>
-          )}
-        </div>
+    <div className="min-h-screen bg-black text-white relative">
+      {/* Video */}
+      <div className="relative">
+        <video
+          ref={videoRef}
+          src={`http://localhost:8000/api/video/stream/${contentId}`}
+          poster="/api/placeholder/1920/1080"
+          controls
+          className="w-full h-[60vh] object-contain bg-black"
+        >
+          Your browser does not support video.
+        </video>
+        <button
+          onClick={() => setIsChatOpen((o) => !o)}
+          className="absolute top-4 right-4 bg-blue-600 hover:bg-blue-700 p-3 rounded-full shadow-lg z-10"
+        >
+          <MessageCircle size={24} />
+        </button>
       </div>
 
-      {/* Video Controls Overlay */}
-      <div className={`absolute inset-0 transition-opacity duration-300 ${
-        showControls ? 'opacity-100' : 'opacity-0'
-      }`}>
-        {/* Center Play Button */}
-        <div className="absolute inset-0 flex items-center justify-center">
-          <button
-            onClick={handlePlayPause}
-            className="bg-black/50 hover:bg-black/70 rounded-full p-4 transition-colors"
-          >
-            {isPlaying ? (
-              <Pause className="w-12 h-12 text-white" />
-            ) : (
-              <Play className="w-12 h-12 text-white" />
-            )}
+      {/* Metadata */}
+      {videoMetadata && (
+        <div className="p-6 max-w-4xl mx-auto">
+          <h1 className="text-3xl font-bold mb-2">{videoMetadata.title}</h1>
+          <div className="flex flex-wrap gap-4 text-gray-300 mb-4">
+            <span>{videoMetadata.release_year}</span>
+            <span>•</span>
+            <span>{videoMetadata.duration} min</span>
+            <span>•</span>
+            <span>{videoMetadata.genre}</span>
+            <span>•</span>
+            <span>Rating: {videoMetadata.rating}/10</span>
+          </div>
+          <p className="text-gray-300 mb-4">{videoMetadata.description}</p>
+          <div className="text-sm text-gray-400">
+            <p>
+              <strong>Director:</strong> {videoMetadata.director}
+            </p>
+            <p>
+              <strong>Cast:</strong> {videoMetadata.actors}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Chat Sidebar */}
+      <div
+        className={`fixed top-0 right-0 h-full bg-gray-900 border-l border-gray-700 transition-transform duration-300 z-50 w-80 ${
+          isChatOpen ? 'translate-x-0' : 'translate-x-full'
+        }`}
+      >
+        <div className="p-4 border-b border-gray-700 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <MessageCircle size={20} />
+            <h3 className="font-semibold">Live Chat</h3>
+            <span
+              className={`w-2 h-2 rounded-full ${
+                isConnected ? 'bg-green-500' : 'bg-red-500'
+              }`}
+            />
+          </div>
+          <button onClick={() => setIsChatOpen(false)} className="text-gray-400 hover:text-white">
+            <X size={20} />
           </button>
         </div>
 
-        {/* Bottom Controls */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-6">
-          {/* Progress Bar */}
-          <div className="mb-4">
-            <div
-              className="w-full h-2 bg-gray-700 rounded cursor-pointer hover:h-3 transition-all"
-              onClick={handleProgressClick}
-            >
-              <div
-                className="h-full bg-red-600 rounded transition-all duration-300"
-                style={{ width: `${(currentTime / duration) * 100}%` }}
-              ></div>
-            </div>
-            <div className="flex justify-between text-sm text-gray-300 mt-1">
-              <span>{formatTime(currentTime)}</span>
-              <span>{formatTime(duration)}</span>
-            </div>
-          </div>
-
-          {/* Control Buttons */}
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <button
-                onClick={handlePlayPause}
-                className="bg-white/20 hover:bg-white/30 rounded-full p-3 transition-colors"
-              >
-                {isPlaying ? (
-                  <Pause className="w-6 h-6 text-white" />
-                ) : (
-                  <Play className="w-6 h-6 text-white" />
-                )}
-              </button>
-              
-              <div className="flex items-center space-x-2">
-                <button
-                  onClick={handleMuteToggle}
-                  className="bg-white/20 hover:bg-white/30 rounded-full p-2 transition-colors"
-                >
-                  {isMuted || volume === 0 ? (
-                    <VolumeX className="w-5 h-5 text-white" />
-                  ) : (
-                    <Volume2 className="w-5 h-5 text-white" />
-                  )}
-                </button>
-                
-                <input
-                  type="range"
-                  min="0"
-                  max="100"
-                  value={isMuted ? 0 : volume}
-                  onChange={handleVolumeChange}
-                  className="w-20 h-1 bg-gray-600 rounded-lg appearance-none cursor-pointer"
-                />
-              </div>
-
-              <div className="text-white">
-                <h3 className="font-semibold">{title}</h3>
-                <p className="text-sm text-gray-300">{description}</p>
-              </div>
-            </div>
-
-            <div className="flex items-center space-x-3">
-              <button className="bg-white/20 hover:bg-white/30 rounded-full p-2 transition-colors">
-                <Settings className="w-5 h-5 text-white" />
-              </button>
-              
-              <button
-                onClick={onToggleChat}
-                className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                  showChat 
-                    ? 'bg-blue-600 text-white' 
-                    : 'bg-white/20 text-white hover:bg-white/30'
-                }`}
-              >
-                Chat
-              </button>
-              
-              <button 
-                onClick={handleFullscreen}
-                className="bg-white/20 hover:bg-white/30 rounded-full p-2 transition-colors"
-              >
-                <Maximize className="w-5 h-5 text-white" />
-              </button>
-            </div>
+        <div className="p-3 border-b border-gray-700">
+          <div className="flex items-center gap-2 text-sm text-gray-400">
+            <Users size={16} />
+            <span>{onlineUsers.length} online</span>
           </div>
         </div>
+
+        <div className="flex-1 overflow-y-auto h-[calc(100vh-200px)] p-4 space-y-3">
+          {messages.map((msg) =>
+            msg.type === 'system' ? (
+              <div key={msg.id} className="text-center text-gray-500 text-sm italic">
+                {msg.message}
+              </div>
+            ) : (
+              <div key={msg.id} className="bg-gray-800 rounded-lg p-3">
+                <div className="flex items-center justify-between mb-1">
+                  <span className="font-semibold text-blue-400 text-sm">
+                    {msg.userId === userId ? 'You' : msg.username || `User ${msg.userId.slice(-4)}`}
+                  </span>
+                  <span className="text-xs text-gray-500">{formatTime(msg.timestamp)}</span>
+                </div>
+                <p className="text-sm">{msg.message}</p>
+              </div>
+            )
+          )}
+          <div ref={messagesEndRef} />
+        </div>
+
+        <form onSubmit={sendMessage} className="p-4 border-t border-gray-700">
+          <div className="flex gap-2">
+            <input
+              type="text"
+              value={newMessage}
+              onChange={(e) => setNewMessage(e.target.value)}
+              onKeyPress={(e) => e.key === 'Enter' && sendMessage(e)}
+              placeholder={isConnected ? 'Type a message...' : 'Connecting...'}
+              disabled={!isConnected}
+              maxLength={500}
+              className="flex-1 bg-gray-800 border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-blue-500 disabled:opacity-50"
+            />
+            <button
+              type="submit"
+              disabled={!newMessage.trim() || !isConnected}
+              className="bg-blue-600 hover:bg-blue-700 disabled:bg-gray-600 disabled:cursor-not-allowed p-2 rounded-lg transition-colors"
+            >
+              <Send size={16} />
+            </button>
+          </div>
+        </form>
       </div>
+
+      {isChatOpen && (
+        <div
+          className="fixed inset-0 bg-black bg-opacity-50 z-40 lg:hidden"
+          onClick={() => setIsChatOpen(false)}
+        />
+      )}
     </div>
   );
 };
