@@ -9,7 +9,7 @@ const HomePage = () => {
   const [isProcessing, setIsProcessing] = useState(false);
   const [voiceStatus, setVoiceStatus] = useState('');
   const [prosodyInfluenced, setProsodyInfluenced] = useState(false);
-  const [videos, setVideos] = useState([]); // Changed from mock data to state
+  const [videos, setVideos] = useState([]);
   const [isSearching, setIsSearching] = useState(false);
   
   const wsRef = useRef(null);
@@ -25,27 +25,40 @@ const HomePage = () => {
   // Filter based on searchQuery and selectedCategory
   const filteredVideos = videos.filter(video => {
     const matchesCat = selectedCategory === 'All' || video.category === selectedCategory;
-    return matchesCat; // Now we only filter by category since search is handled by backend
+    return matchesCat;
   });
 
   // Connect websocket on mount
   useEffect(() => {
     const ws = new WebSocket(`ws://localhost:8000/ws/${clientId.current}`);
+    
     ws.onopen = () => {
       setIsConnected(true);
       setVoiceStatus('Voice service online');
     };
-    ws.onmessage = ev => handleWebSocketMessage(JSON.parse(ev.data));
+    
+    ws.onmessage = ev => {
+      try {
+        const msg = JSON.parse(ev.data);
+        handleWebSocketMessage(msg);
+      } catch (err) {
+        console.error('Error parsing WebSocket message:', err);
+      }
+    };
+    
     ws.onclose = () => {
       setIsConnected(false);
       setVoiceStatus('Voice service offline');
     };
+    
     ws.onerror = err => {
       console.error('WS error:', err);
       setIsConnected(false);
       setVoiceStatus('Voice service error');
     };
+    
     wsRef.current = ws;
+    
     return () => {
       cleanup();
     };
@@ -57,7 +70,6 @@ const HomePage = () => {
         setIsProcessing(false);
         setSearchQuery(msg.text);
         setVoiceStatus(`🎤 Heard: "${msg.text}"`);
-        // Immediately trigger prosody analysis
         wsRef.current.send(JSON.stringify({
           type: 'analyze_prosody',
           text: msg.text,
@@ -73,6 +85,16 @@ const HomePage = () => {
         setIsSearching(false);
         setVideos(msg.results);
         setVoiceStatus(`🔍 Found ${msg.results.length} results`);
+        break;
+      case 'search_response':
+        // Handle the search response from the new endpoint
+        setIsSearching(false);
+        if (msg.success) {
+          setVideos(msg.results);
+          setVoiceStatus(`🔍 Found ${msg.results.length} results`);
+        } else {
+          setVoiceStatus(`❌ Search failed: ${msg.error || 'Unknown error'}`);
+        }
         break;
       case 'error':
         setIsProcessing(false);
@@ -129,7 +151,6 @@ const HomePage = () => {
   };
 
   const stopRecording = () => {
-    // send any leftover frames
     if (audioBufferRef.current.length && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'audio_data',
@@ -137,9 +158,7 @@ const HomePage = () => {
         sampleRate: 16000
       }));
     }
-    // finalise
     wsRef.current.send(JSON.stringify({ type: 'audio_end', sampleRate: 16000 }));
-    // clean up audio nodes
     processorRef.current.disconnect();
     sourceRef.current.disconnect();
     audioContextRef.current.close();
@@ -161,12 +180,13 @@ const HomePage = () => {
     setIsSearching(true);
     setVoiceStatus('🔍 Searching...');
     
-    // Send search request via WebSocket
+    // Send search request via WebSocket to the new endpoint
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'search',
         query: searchQuery,
-        client_id: clientId.current
+        client_id: clientId.current,
+        endpoint: 'search' // Specify we want to use the search endpoint
       }));
     } else {
       setVoiceStatus('❌ Connection not ready');

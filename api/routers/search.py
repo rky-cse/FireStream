@@ -6,11 +6,8 @@ from typing import Dict, Optional
 import os
 import sys
 
-# Add the project root to path (two levels up from api/routers)
-sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-
 try:
-    from recommender.searchRecommender.engine import RecommendationEngine, SearchResult
+    from searchRecommender.engine import RecommendationEngine, SearchResult
     logger = logging.getLogger("search_router")
 except ImportError as e:
     logger.error(f"Import error: {e}")
@@ -59,10 +56,10 @@ async def websocket_search_endpoint(websocket: WebSocket, client_id: str):
             raw_data = await websocket.receive_text()
             try:
                 msg = json.loads(raw_data)
-                
-                if msg.get("type") == "search_request":
+                logger.info(f"Received message from {client_id}: {msg}")
+                if msg.get("type") == "search":
                     user_id = 'USR10001'
-                    query_text = msg.get("search_content", "")
+                    query_text = msg.get("query", "")
                     prosody_data = msg.get("prosody", {})
 
                     logger.info(f"Processing search request from {client_id} for user {user_id}")

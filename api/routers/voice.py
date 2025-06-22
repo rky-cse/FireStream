@@ -15,6 +15,11 @@ from ingestion.voice.voiceProsodyExtractor import (
     extract_prosody,
 )
 
+# ——— new imports ———
+from searchRecommender.engine import RecommendationEngine
+from starlette.concurrency import run_in_threadpool
+# ————————————
+
 # Load env vars (for any OPENSMILE paths, etc.)
 load_dotenv()
 
@@ -33,6 +38,22 @@ try:
 except Exception as e:
     whisper_model = None
     logger.error(f"Failed to load Whisper: {e}")
+
+# Initialize recommendation engine (for search feature)
+DB_CONFIG = {
+    "host": os.getenv("DB_HOST", "localhost"),
+    "port": int(os.getenv("DB_PORT", 5432)),
+    "database": os.getenv("DB_NAME", "firestream_db"),
+    "user": os.getenv("DB_USER", "postgres"),
+    "password": os.getenv("DB_PASSWORD", "postgres"),
+}
+ES_HOST = os.getenv("ES_HOST", "http://localhost:9200")
+try:
+    engine = RecommendationEngine(DB_CONFIG, es_host=ES_HOST)
+    logger.info("Recommendation engine initialized in voice router")
+except Exception as e:
+    engine = None
+    logger.error(f"Failed to initialize recommendation engine: {e}")
 
 router = APIRouter()
 
@@ -56,8 +77,50 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
             data = await websocket.receive_text()
             msg = json.loads(data)
 
+            # Handle search requests asynchronously
+            if msg.get("type") == "search":
+                if engine is None:
+                    await websocket.send_text(json.dumps({
+                        "type": "error",
+                        "message": "Search engine unavailable"
+                    }))
+                    continue
+
+                search_text = msg.get("query", "")
+                logger.info(f"Received search: {search_text!r}")
+
+                # Immediately acknowledge search request
+                await websocket.send_text(json.dumps({
+                    "type": "search_ack",
+                    "timestamp": datetime.now().isoformat(),
+                    "message": "Search request received, processing..."
+                }))
+
+                # Run recommendation engine without prosody in threadpool
+                results = await run_in_threadpool(
+                    engine.get_recommendations,
+                    'USR10001',
+                    search_text
+                )
+                print("Search results:", results)
+                # Send back final results
+                await websocket.send_text(json.dumps({
+                    "type": "search_results",
+                    "timestamp": datetime.now().isoformat(),
+                    "results": [
+                        {
+                            "content_id": r.content_id,
+                            "title": r.title,
+                            "score": r.score,
+                            "match_reasons": r.match_reasons,
+                            "metadata": r.metadata
+                        } for r in results
+                    ]
+                }))
+                continue
+
             # Append incoming audio
-            if msg["type"] == "audio_data":
+            if msg.get("type") == "audio_data":
                 arr = np.array(msg["data"], dtype=np.float32)
                 sr = msg.get("sampleRate", 16000)
                 buf = connections[client_id]["audio_buffer"]
@@ -68,12 +131,12 @@ async def websocket_endpoint(websocket: WebSocket, client_id: str):
                     await process_audio_buffer(client_id, sr)
 
             # Final chunk
-            elif msg["type"] == "audio_end":
+            elif msg.get("type") == "audio_end":
                 sr = msg.get("sampleRate", 16000)
                 await process_audio_buffer(client_id, sr, final=True)
 
             # Prosody analysis request
-            elif msg["type"] == "analyze_prosody":
+            elif msg.get("type") == "analyze_prosody":
                 text = msg.get("text", "")
                 session_id = msg.get("session_id", "")
                 sr = msg.get("sampleRate", 16000)
@@ -173,7 +236,6 @@ async def analyze_with_prosody_by_session(client_id: str, text: str, session_id:
         "prosody_features": feats
     }
 
-    # Build prosody_summary & key_features
     if feats and not feats.get("error"):
         pitch = {k: v for k,v in feats.items() if any(t in k.lower() for t in ["pitch","f0","voicing"])}
         energy = {k: v for k,v in feats.items() if any(t in k.lower() for t in ["energy","rms","power"])}
@@ -192,10 +254,7 @@ async def analyze_with_prosody_by_session(client_id: str, text: str, session_id:
 
         keys = {}
         for name, val in feats.items():
-            if isinstance(val, (int, float)) and any(t in name.lower() for t in [
-                "pitch", "f0", "energy", "rms", "spectral_centroid",
-                "duration", "zero_crossing", "estimated"
-            ]):
+            if isinstance(val, (int, float)) and any(t in name.lower() for t in ["pitch","f0","energy","rms","spectral_centroid","duration","zero_crossing","estimated"]):
                 clean = name.replace("_", " ").title()
                 keys[clean] = round(val, 3)
             if len(keys) >= 10:

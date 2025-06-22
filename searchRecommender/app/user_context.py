@@ -8,7 +8,7 @@ import logging
 import requests
 from psycopg2.extras import RealDictCursor
 from pathlib import Path
-from .festival import FestivalDetector
+from searchRecommender.app.festival import FestivalDetector
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)

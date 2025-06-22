@@ -65,7 +65,7 @@ class IntentClassifier:
     def emotion_detector(self):
         """Lazy-load emotion detector with proper import"""
         if self._emotion_detector is None:
-            from app.emotion import EmotionDetector  # Absolute import
+            from searchRecommender.app.emotion import EmotionDetector  # Absolute import
             self._emotion_detector = EmotionDetector()
         return self._emotion_detector
 

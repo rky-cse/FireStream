@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 from dataclasses import dataclass
 import logging
 
@@ -30,27 +30,27 @@ class RecommendationEngine:
         """Initialize all required components"""
         try:
             logger.info("Initializing emotion detector...")
-            from app.emotion import EmotionDetector
+            from searchRecommender.app.emotion import EmotionDetector
             self.emotion_detector = EmotionDetector()
             
             logger.info("Initializing intent classifier...")
-            from app.intent import IntentClassifier
+            from searchRecommender.app.intent import IntentClassifier
             self.intent_classifier = IntentClassifier()
             
             logger.info("Initializing prosody analyzer...")
-            from app.prosody import ProsodyAnalyzer
+            from searchRecommender.app.prosody import ProsodyAnalyzer
             self.prosody_analyzer = ProsodyAnalyzer()
             
             logger.info("Initializing content searcher...")
-            from app.searcher import ContentSearcher
+            from searchRecommender.app.searcher import ContentSearcher
             self.searcher = ContentSearcher(self.es_host)
             
             logger.info("Initializing context fetcher...")
-            from app.user_context import UserContextFetcher
+            from searchRecommender.app.user_context import UserContextFetcher
             self.context_fetcher = UserContextFetcher(self.db_config)
             
             logger.info("Initializing festival detector...")
-            from app.festival import FestivalDetector
+            from searchRecommender.app.festival import FestivalDetector
             self.festival_detector = FestivalDetector(self.db_config)
             
             logger.info("Recommendation engine initialized successfully")
@@ -118,26 +118,22 @@ class RecommendationEngine:
                 user_context = self._create_minimal_context(user_id)
                 festivals = []
             
-            # 3. Prepare search parameters
-            search_params = self._prepare_search_params(
+            # 3. Prepare search query
+            search_query = self._build_search_query(
+                search_text=search_text,
                 analysis=analysis,
                 user_context=user_context,
                 festivals=festivals
             )
             
-            # 4. Execute search and get results
-            search_results = self.searcher.search(
-                query=search_text,
-                filters=search_params['filters'],
-                boost_params=search_params['boosts'],
-                size=10  # Default number of results
-            )
+            # 4. Execute search
+            raw_results = self.searcher.search(search_query)
             
             # 5. Process and return results
             return self._process_results(
-                raw_results=search_results,
+                raw_results=raw_results,
                 user_context=user_context,
-                search_params=search_params
+                analysis=analysis
             )
             
         except Exception as e:
@@ -147,90 +143,109 @@ class RecommendationEngine:
 
     def _create_minimal_context(self, user_id: str):
         """Create a minimal user context when full context fetching fails"""
-        from app.user_context import UserContext
+        from searchRecommender.app.user_context import UserContext
         return UserContext(
             user_id=user_id,
             preferred_genres=[],
             watch_history=[]
         )
 
-    def _prepare_search_params(self, analysis: Dict, user_context, festivals: List[str]) -> Dict:
+    def _build_search_query(self, search_text: str, analysis: Dict, user_context, festivals: List[str]) -> Dict:
         """
-        Prepare search parameters based on analysis and user context.
-        Returns filters and boost parameters for the search.
+        Build Elasticsearch query compatible with your index structure
         """
-        params = {
-            'filters': {},
-            'boosts': {}
+        query = {
+            "query": {
+                "bool": {
+                    "must": [
+                        {
+                            "multi_match": {
+                                "query": search_text,
+                                "fields": ["title^3", "description^2", "tags"],
+                                "fuzziness": "AUTO"
+                            }
+                        }
+                    ],
+                    "filter": [],
+                    "should": []
+                }
+            },
+            "size": 10,
+            "_source": ["title", "description", "genres", "mood_tags", "rating"]
         }
-        
-        # Add mood filters/boosts
-        if analysis['resolved_mood'] != 'neutral':
-            params['filters']['mood'] = analysis['resolved_mood']
-            params['boosts']['mood_match'] = 1.5
-            
-        # Add user preference boosts
-        if user_context.preferred_genres:
-            params['boosts']['preferred_genres'] = {
-                'values': user_context.preferred_genres,
-                'factor': 1.3
-            }
-        
-        # Add festival boosts if active
-        if festivals:
-            params['boosts']['festival_theme'] = {
-                'values': festivals,
-                'factor': 1.2
-            }
-        
-        # Add temporal context boosts
-        params['boosts']['time_of_day'] = user_context.time_of_day
-        params['boosts']['day_type'] = user_context.day_of_week
-        
-        return params
 
-    def _process_results(self, raw_results: List[Dict], user_context, search_params: Dict) -> List[SearchResult]:
+        # Mood filter if detected
+        if analysis['resolved_mood'] != 'neutral':
+            query["query"]["bool"]["filter"].append({
+                "term": {"mood_tags": analysis['resolved_mood']}
+            })
+
+        # Boost preferred genres
+        if user_context.preferred_genres:
+            query["query"]["bool"]["should"].append({
+                "terms": {
+                    "genres": user_context.preferred_genres,
+                    "boost": 1.5
+                }
+            })
+
+        # Boost higher rated content if rating field exists
+        query["query"]["bool"]["should"].append({
+            "range": {
+                "rating": {
+                    "gte": 7,
+                    "boost": 1.3
+                }
+            }
+        })
+
+        return query
+
+    def _process_results(self, raw_results: Dict, user_context, analysis: Dict) -> List[SearchResult]:
         """
-        Process raw search results into SearchResult objects with explanations.
-        Applies personalization scoring based on user context.
+        Process results with your actual index fields
         """
         processed = []
         
-        for result in raw_results:
-            # Calculate personalization score
-            base_score = result.get('score', 0)
-            personalization_factor = 1.0
+        for hit in raw_results.get('hits', {}).get('hits', []):
+            source = hit.get('_source', {})
+            score = hit.get('_score', 0)
+            content_id = hit.get('_id', '')
             
-            # Apply genre preference boost
+            # Generate match reasons
+            match_reasons = []
+            
+            # Mood match
+            if (analysis['resolved_mood'] != 'neutral' and 
+                analysis['resolved_mood'] in source.get('mood_tags', [])):
+                match_reasons.append(f"Mood: {analysis['resolved_mood']}")
+            
+            # Genre match
             if user_context.preferred_genres and any(
                 genre in user_context.preferred_genres 
-                for genre in result.get('genres', [])
+                for genre in source.get('genres', [])
             ):
-                personalization_factor *= search_params['boosts'].get('preferred_genres', {}).get('factor', 1.0)
+                match_reasons.append("Preferred genre")
             
-            # Create match reasons
-            match_reasons = []
-            if 'mood' in search_params['filters'] and search_params['filters']['mood'] in result.get('mood_tags', []):
-                match_reasons.append(f"Mood: {search_params['filters']['mood']}")
-            
-            if any(genre in user_context.preferred_genres for genre in result.get('genres', [])):
-                match_reasons.append("Matches preferred genres")
+            # Rating
+            if source.get('rating', 0) >= 7:
+                match_reasons.append(f"Highly rated ({source['rating']}/10)")
             
             processed.append(SearchResult(
-                content_id=result['id'],
-                title=result['title'],
-                score=base_score * personalization_factor,
+                content_id=content_id,
+                title=source.get('title', 'Untitled'),
+                score=score,
                 match_reasons=match_reasons,
                 metadata={
-                    'genres': result.get('genres', []),
-                    'mood': result.get('mood', 'neutral')
+                    'genres': source.get('genres', []),
+                    'mood': source.get('mood_tags', ['neutral'])[0],
+                    'rating': source.get('rating', 0),
+                    'description': source.get('description', 'No description available')
                 }
             ))
         
-        # Sort by final score
         return sorted(processed, key=lambda x: x.score, reverse=True)
-
-# Example usage
+# Updated example usage
 if __name__ == "__main__":
     # Configuration
     DB_CONFIG = {
@@ -241,24 +256,38 @@ if __name__ == "__main__":
         "password": "postgres"
     }
     
-    # Initialize engine
+    # Initialize engine with more logging
+    logging.basicConfig(level=logging.DEBUG)
     engine = RecommendationEngine(DB_CONFIG)
     
-    # Example request
-    user_id = "USR10001"
-    search_text = "I'm feeling happy and want to watch something fun"
-    prosody = {
-        'pitch': 120,
-        'energy': 0.8,
-        'speech_rate': 1.2
-    }
+    # More realistic test cases
+    test_cases = [
+        {
+            "user_id": "USR10001",
+            "search_text": "i am feeling sad and looking for uplifting movies",
+            "prosody": {'pitch': 120, 'energy': 0.8}
+        },
+        {
+            "user_id": "USR10002", 
+            "search_text": "I'm very sad so I'm doing something funny.",
+            "prosody": None
+        }
+    ]
     
-    # Get recommendations
-    results = engine.get_recommendations(user_id, search_text, prosody)
-    
-    # Print results
-    print(f"\nRecommendations for user {user_id}:")
-    for i, result in enumerate(results[:5], 1):
-        print(f"\n{i}. {result.title} (Score: {result.score:.2f})")
-        if result.match_reasons:
-            print("   Why:", ", ".join(result.match_reasons))
+    for test in test_cases:
+        print(f"\nTesting for user {test['user_id']}: {test['search_text']}")
+        results = engine.get_recommendations(
+            user_id=test['user_id'],
+            search_text=test['search_text'],
+            prosody=test['prosody']
+        )
+        
+        print(f"\nTop recommendations:")
+        for i, result in enumerate(results[:3], 1):
+            print(f"\n{i}. {result.title} (Score: {result.score:.2f})")
+            print(f"   Why: {', '.join(result.match_reasons)}")
+            print(f"   Genres: {', '.join(result.metadata['genres'])}")
+            if result.metadata['rating'] > 0:
+                print(f"   Rating: {result.metadata['rating']}/10")
+            if result.metadata['description']:
+                print(f"   Description: {result.metadata['description'][:100]}...")

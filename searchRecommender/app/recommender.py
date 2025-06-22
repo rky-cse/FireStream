@@ -3,9 +3,9 @@ from dataclasses import dataclass
 import logging
 import requests
 import json
-from app.user_context import UserContext
-from app.intent import SearchIntent
-from app.festival import FestivalDetector
+from searchRecommender.app.user_context import UserContext
+from searchRecommender.app.intent import SearchIntent
+from searchRecommender.app.festival import FestivalDetector
 
 # Configure logging
 logging.basicConfig(
@@ -233,8 +233,8 @@ class ContentRecommender:
             raise
 
 if __name__ == "__main__":
-    from app.user_context import UserContextFetcher
-    from app.intent import SearchIntent
+    from searchRecommender.app.user_context import UserContextFetcher
+    from searchRecommender.app.intent import SearchIntent
     
     # Enable debug logging
     logging.getLogger().setLevel(logging.DEBUG)
