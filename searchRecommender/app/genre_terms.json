@@ -1,0 +1,7 @@
+{
+    "genres": [
+        "comedy", "drama", "action", "horror", "romance",
+        "sci-fi", "thriller", "documentary", "animation",
+        "fantasy", "mystery", "crime", "adventure"
+    ]
+}
